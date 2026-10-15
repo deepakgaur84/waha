@@ -54,11 +54,10 @@ function sha(text) {
 // ---------------------------------------------------------------- snapshots
 
 function discoverSnapshots(root) {
-  if (!fs.existsSync(root)) {
-    throw new Error(`BACKUP_ROOT ${root} does not exist inside the container`);
-  }
-  const found = fs
-    .readdirSync(root, { withFileTypes: true })
+  // A missing or unreadable backup folder is not an error: there is simply nothing to import.
+  let entries = [];
+  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { return []; }
+  const found = entries
     .filter((e) => e.isDirectory() && fs.existsSync(path.join(root, e.name, 'Manifest.db')))
     .map((e) => e.name);
 
@@ -401,6 +400,10 @@ function writeReport(report) {
 function runImport() {
   const prefs = prefsStore.get(); // read fresh: a change in the reader applies to the next run
   let snapshots = discoverSnapshots(cfg.backupRoot);
+  if (!snapshots.length) {
+    log(`No iOS backups found under ${cfg.backupRoot} (folder missing, empty, or no Manifest.db inside). Backup import skipped; everything else keeps running.`);
+    return null;
+  }
   log(`Found ${snapshots.length} snapshot(s) under ${cfg.backupRoot}: ${snapshots.join(', ')}`);
   const excluded = prefs.excluded_backup_folders || [];
   if (excluded.length) {
