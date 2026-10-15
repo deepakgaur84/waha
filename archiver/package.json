@@ -1,0 +1,14 @@
+{
+  "name": "waha-archiver",
+  "version": "2.0.0",
+  "description": "Archives WhatsApp history: iOS backup import (stage 1), WAHA sync and merge (later stages)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "import": "node src/backupImport.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "express": "^4.21.0"
+  }
+}
