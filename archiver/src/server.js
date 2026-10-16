@@ -17,7 +17,7 @@ const { replayStored } = require('./events');
 const { syncAvatars, setAfterRun } = require('./avatars');
 
 // Shown at start-up so the log tells you which version is really running.
-const BUILD = 'stage4.2 (photos start before media, expired media fails fast)';
+const BUILD = 'stage5.0 (Android backup import, WAHA_ENABLED switch)';
 
 const app = express();
 
@@ -73,7 +73,7 @@ let timer = null;
 let scheduleEnabled = false;
 function schedule() {
   clearTimeout(timer);
-  if (!scheduleEnabled) return;
+  if (!scheduleEnabled || !cfg.wahaEnabled) return;
   const minutes = prefsStore.get().sync_interval_minutes;
   if (!(minutes > 0)) return;
   timer = setTimeout(async () => {
@@ -97,7 +97,9 @@ async function start() {
     await runBackupImport();
     reader.invalidateChats();
   }
-  if (cfg.syncOnStart) {
+  if (!cfg.wahaEnabled) {
+    console.log('[archiver] WAHA_ENABLED=false: backup-only mode, no WAHA sync or profile photos');
+  } else if (cfg.syncOnStart) {
     console.log('[archiver] WAHA_SYNC_ON_START=true, starting WAHA sync');
     let ok = await runSync();
     // WAHA may still be starting (or the session not WORKING yet): retry every 2 minutes
@@ -116,7 +118,7 @@ async function start() {
 
 app.listen(cfg.port, () => {
   console.log(`[archiver] build ${BUILD} listening on ${cfg.port}, database ${cfg.dbPath}`);
-  if (!cfg.hmacSecret) {
+  if (cfg.wahaEnabled && !cfg.hmacSecret) {
     console.warn('[archiver] WARNING: WAHA_WEBHOOK_HMAC_SECRET is empty, so webhook requests are NOT verified. Set it (and WHATSAPP_HOOK_HMAC_KEY on WAHA).');
   }
   start().catch((e) => console.error(`[archiver] startup failed: ${e.stack || e.message}`));

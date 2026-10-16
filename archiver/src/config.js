@@ -43,6 +43,8 @@ module.exports = {
   probeStanzaIds: list(env.PROBE_STANZA_IDS).map((s) => s.toUpperCase()),
 
   // ---- Stage 2: WAHA ---------------------------------------------------------
+  // false = a backup-only stack (for example an Android test): no WAHA sync, photos or schedule.
+  wahaEnabled: bool(env.WAHA_ENABLED, true),
   wahaBaseUrl: (env.WAHA_BASE_URL || 'http://waha:3000').replace(/\/+$/, ''),
   wahaSession: env.WAHA_SESSION || 'default',
   wahaApiKey: env.WAHA_API_KEY || '',

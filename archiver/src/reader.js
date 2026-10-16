@@ -282,6 +282,15 @@ function mediaFor(row) {
       return { abs, mime: EXT_MIME[ext] || sniffMime(abs) };
     }
   }
+  // Android backups keep the media files as plain files next to the database.
+  if (row.media_on_disk === 1 && row.media_snapshot && !row.media_file_id && row.media_rel_path) {
+    const base = path.join(cfg.backupRoot, row.media_snapshot);
+    const abs = path.join(base, row.media_rel_path);
+    if (inside(base, abs) && fs.existsSync(abs)) {
+      const ext = path.extname(abs).replace('.', '').toLowerCase();
+      return { abs, mime: EXT_MIME[ext] || sniffMime(abs) };
+    }
+  }
   return null;
 }
 

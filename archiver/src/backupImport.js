@@ -399,64 +399,72 @@ function writeReport(report) {
 
 function runImport() {
   const prefs = prefsStore.get(); // read fresh: a change in the reader applies to the next run
-  let snapshots = discoverSnapshots(cfg.backupRoot);
-  if (!snapshots.length) {
-    log(`No iOS backups found under ${cfg.backupRoot} (folder missing, empty, or no Manifest.db inside). Backup import skipped; everything else keeps running.`);
+  const android = require('./androidImport');
+  const sources = [
+    { kind: 'ios', found: discoverSnapshots(cfg.backupRoot), importFn: importSnapshot },
+    { kind: 'android', found: android.discoverAndroidSnapshots(cfg.backupRoot), importFn: android.importAndroidSnapshot },
+  ];
+  if (!sources.some((s) => s.found.length)) {
+    log(`No backups found under ${cfg.backupRoot} (folder missing, empty, no Manifest.db for iOS, no decrypted msgstore.db for Android). Backup import skipped; everything else keeps running.`);
     return null;
   }
-  log(`Found ${snapshots.length} snapshot(s) under ${cfg.backupRoot}: ${snapshots.join(', ')}`);
-  const excluded = prefs.excluded_backup_folders || [];
-  if (excluded.length) {
-    const skipped = snapshots.filter((s) => excluded.includes(s));
-    if (skipped.length) log(`Excluded by preference, not read: ${skipped.join(', ')}`);
-    snapshots = snapshots.filter((s) => !excluded.includes(s));
-  }
 
+  const excluded = prefs.excluded_backup_folders || [];
   const doneBefore = new Map(
     db.prepare("SELECT snapshot, stats_json FROM import_runs WHERE status = 'done'").all()
       .map((r) => [r.snapshot, r.stats_json ? JSON.parse(r.stats_json) : null])
   );
-
-  if (prefs.backup_import_mode === 'latest' && snapshots.length > 1) {
-    const newest = snapshots[snapshots.length - 1];
-    log(`Import mode is "latest" (Preferences): backups are cumulative, so only ${newest} is considered`);
-    snapshots = [newest];
-  }
-
   const allStats = [];
-  // Keep the earlier imports visible in the report even when they are not touched this run.
-  for (const [name, stats] of doneBefore) {
-    if (!snapshots.includes(name) && stats) allStats.push({ ...stats, skipped: true });
-  }
-  for (const name of snapshots) {
-    if (doneBefore.has(name) && !cfg.forceReimport) {
-      log(`${name}: already imported, skipping (set FORCE_REIMPORT=true to redo)`);
-      if (doneBefore.get(name)) allStats.push({ ...doneBefore.get(name), skipped: true });
-      continue;
+
+  for (const source of sources) {
+    let snapshots = source.found;
+    if (!snapshots.length) continue;
+    log(`Found ${snapshots.length} ${source.kind} backup(s) under ${cfg.backupRoot}: ${snapshots.join(', ')}`);
+    const skipped = snapshots.filter((s) => excluded.includes(s));
+    if (skipped.length) log(`Excluded by preference, not read: ${skipped.join(', ')}`);
+    snapshots = snapshots.filter((s) => !excluded.includes(s));
+
+    if (prefs.backup_import_mode === 'latest' && snapshots.length > 1) {
+      const newest = snapshots[snapshots.length - 1];
+      log(`Import mode is "latest" (Preferences): backups are cumulative, so only ${newest} is considered`);
+      snapshots = [newest];
     }
-    log(`${name}: importing...`);
-    db.prepare(
-      `INSERT INTO import_runs (snapshot, started_at, status) VALUES (?, ?, 'running')
-       ON CONFLICT(snapshot) DO UPDATE SET started_at = excluded.started_at, finished_at = NULL, status = 'running', stats_json = NULL`
-    ).run(name, Math.floor(Date.now() / 1000));
-    try {
-      const stats = importSnapshot(cfg.backupRoot, name);
-      db.prepare("UPDATE import_runs SET status = 'done', finished_at = ?, stats_json = ? WHERE snapshot = ?")
-        .run(Math.floor(Date.now() / 1000), JSON.stringify(stats), name);
-      allStats.push(stats);
-      log(
-        `${name}: done in ${stats.seconds}s. ${stats.messages_read} read, ${stats.new_messages} new, ` +
-        `${stats.no_stanza_id} without stanza id, media ${stats.media_on_disk}/${stats.media_refs} found.`
-      );
-    } catch (e) {
-      db.prepare("UPDATE import_runs SET status = 'failed', finished_at = ?, stats_json = ? WHERE snapshot = ?")
-        .run(Math.floor(Date.now() / 1000), JSON.stringify({ error: e.message }), name);
-      log(`${name}: FAILED - ${e.message}`);
-      allStats.push({ snapshot: name, error: e.message });
+
+    // Keep the earlier imports visible in the report even when they are not touched this run.
+    for (const name of source.found) {
+      const before = doneBefore.get(name);
+      if (!snapshots.includes(name) && before) allStats.push({ ...before, skipped: true });
+    }
+    for (const name of snapshots) {
+      if (doneBefore.has(name) && !cfg.forceReimport) {
+        log(`${name}: already imported, skipping (set FORCE_REIMPORT=true to redo)`);
+        if (doneBefore.get(name)) allStats.push({ ...doneBefore.get(name), skipped: true });
+        continue;
+      }
+      log(`${name}: importing (${source.kind})...`);
+      db.prepare(
+        `INSERT INTO import_runs (snapshot, started_at, status) VALUES (?, ?, 'running')
+         ON CONFLICT(snapshot) DO UPDATE SET started_at = excluded.started_at, finished_at = NULL, status = 'running', stats_json = NULL`
+      ).run(name, Math.floor(Date.now() / 1000));
+      try {
+        const stats = source.importFn(cfg.backupRoot, name);
+        db.prepare("UPDATE import_runs SET status = 'done', finished_at = ?, stats_json = ? WHERE snapshot = ?")
+          .run(Math.floor(Date.now() / 1000), JSON.stringify(stats), name);
+        allStats.push(stats);
+        log(
+          `${name}: done in ${stats.seconds}s. ${stats.messages_read} read, ${stats.new_messages} new, ` +
+          `media ${stats.media_on_disk}/${stats.media_refs} found.`
+        );
+      } catch (e) {
+        db.prepare("UPDATE import_runs SET status = 'failed', finished_at = ?, stats_json = ? WHERE snapshot = ?")
+          .run(Math.floor(Date.now() / 1000), JSON.stringify({ error: e.message }), name);
+        log(`${name}: FAILED - ${e.message}`);
+        allStats.push({ snapshot: name, error: e.message });
+      }
     }
   }
 
-  // Everything with a backup snapshot comes from an iOS backup (this importer only reads iOS).
+  // Rows from an iOS snapshot that were not tagged yet (Android rows are tagged when they are written).
   db.exec("UPDATE messages SET backup_kind = 'ios' WHERE backup_kind IS NULL AND first_snapshot IS NOT NULL");
   db.exec('UPDATE chats SET last_message_ts = (SELECT MAX(ts) FROM messages WHERE messages.chat_id = chats.chat_id)');
 
