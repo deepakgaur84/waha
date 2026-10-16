@@ -383,6 +383,18 @@ function statusInfo() {
       last_stats: syncState.last_stats || lastStats,
     },
     media_job_running: mediaJob.running,
+    avatars: {
+      enabled: prefsStore.get().fetch_avatars,
+      running: avatarState.running,
+      done: avatarState.done,
+      total: avatarState.total,
+      with_photo: n("SELECT COUNT(*) AS n FROM avatars WHERE status = 'ok'"),
+      without_photo: n("SELECT COUNT(*) AS n FROM avatars WHERE status = 'none'"),
+      not_checked: Math.max(0, n('SELECT COUNT(DISTINCT chat_id) AS n FROM messages') - n('SELECT COUNT(*) AS n FROM avatars')),
+      last_finished: avatarState.last_finished,
+      last_stats: avatarState.last_stats,
+      last_errors: avatarState.last_errors,
+    },
   };
 }
 

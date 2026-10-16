@@ -14,7 +14,11 @@ const NONE_DAYS = 7;    // look again for a photo that was missing or hidden
 const PAUSE_MS = 1000;  // between WAHA requests
 const MAX_PER_RUN = 400;
 
-const state = { running: false, last_finished: null, last_stats: null };
+// Called after every run (the server uses it to refresh the reader's chat list).
+let afterRun = () => {};
+function setAfterRun(fn) { afterRun = fn; }
+
+const state = { running: false, done: 0, total: 0, last_finished: null, last_stats: null, last_errors: [] };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fileFor = (jid) => `${crypto.createHash('sha1').update(jid).digest('hex')}.jpg`;
 
@@ -52,13 +56,20 @@ async function download(url) {
 // Returns stats, or null when it did not run.
 async function syncAvatars() {
   const prefs = prefsStore.get();
-  if (!prefs.fetch_avatars || state.running) return null;
+  if (!prefs.fetch_avatars) {
+    console.log('[avatars] profile photos are switched off in Preferences, skipping');
+    return null;
+  }
+  if (state.running) return null;
   state.running = true;
   const stats = { checked: 0, saved: 0, none: 0, errors: 0 };
+  state.last_errors = [];
+  state.done = 0;
   try {
     fs.mkdirSync(DIR, { recursive: true });
     const due = dueChats(prefs.skip_chat_suffixes || []).slice(0, MAX_PER_RUN);
-    if (due.length) console.log(`[avatars] ${due.length} chat(s) to check for a profile photo`);
+    state.total = due.length;
+    console.log(`[avatars] ${due.length} chat(s) to check for a profile photo`);
     let consecutiveErrors = 0;
     for (const jid of due) {
       if (!prefsStore.get().fetch_avatars) break;
@@ -82,6 +93,12 @@ async function syncAvatars() {
       } catch (e) {
         stats.errors += 1;
         consecutiveErrors += 1;
+        // The reason matters when no photos appear, so the first few are logged and shown in Preferences.
+        if (state.last_errors.length < 5) {
+          const why = `${jid.split('@')[0].slice(-4).padStart(jid.split('@')[0].length, '*')}: ${e.message}`;
+          state.last_errors.push(why);
+          console.warn(`[avatars] ${why}`);
+        }
         // A 4xx from WAHA means "no picture for this chat"; anything else may be temporary and is retried next time.
         if (e.status && e.status >= 400 && e.status < 500) {
           mark.run(jid, null, 'none', now);
@@ -92,13 +109,15 @@ async function syncAvatars() {
           break;
         }
       }
+      state.done += 1;
       await sleep(PAUSE_MS);
     }
-    if (stats.checked || stats.errors) console.log(`[avatars] done: ${stats.saved} saved, ${stats.none} without a picture, ${stats.errors} error(s)`);
+    console.log(`[avatars] finished: ${stats.checked} checked, ${stats.saved} saved, ${stats.none} without a picture, ${stats.errors} error(s)`);
   } finally {
     state.running = false;
     state.last_finished = new Date().toISOString();
     state.last_stats = stats;
+    try { afterRun(); } catch (_) { /* never let a UI refresh break the job */ }
   }
   return stats;
 }
@@ -110,4 +129,4 @@ function avatarPath(jid) {
   return abs.startsWith(DIR + path.sep) && fs.existsSync(abs) ? abs : null;
 }
 
-module.exports = { syncAvatars, avatarPath, avatarState: state };
+module.exports = { syncAvatars, avatarPath, setAfterRun, avatarState: state };

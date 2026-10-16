@@ -14,7 +14,10 @@ const { runSync, syncState } = require('./wahaSync');
 const { runBackupImport, importState } = require('./importRunner');
 const reader = require('./reader');
 const { replayStored } = require('./events');
-const { syncAvatars } = require('./avatars');
+const { syncAvatars, setAfterRun } = require('./avatars');
+
+// Shown at start-up so the log tells you which version is really running.
+const BUILD = 'stage4.2 (photos start before media, expired media fails fast)';
 
 const app = express();
 
@@ -81,6 +84,7 @@ function schedule() {
   }, minutes * 60 * 1000);
 }
 reader.setPrefsHook(schedule);
+setAfterRun(() => reader.invalidateChats());
 
 async function start() {
   // Reactions, edits and deletions that an earlier version only stored raw are applied now.
@@ -111,7 +115,7 @@ async function start() {
 }
 
 app.listen(cfg.port, () => {
-  console.log(`[archiver] listening on ${cfg.port}, database ${cfg.dbPath}`);
+  console.log(`[archiver] build ${BUILD} listening on ${cfg.port}, database ${cfg.dbPath}`);
   if (!cfg.hmacSecret) {
     console.warn('[archiver] WARNING: WAHA_WEBHOOK_HMAC_SECRET is empty, so webhook requests are NOT verified. Set it (and WHATSAPP_HOOK_HMAC_KEY on WAHA).');
   }

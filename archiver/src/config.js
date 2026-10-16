@@ -67,6 +67,8 @@ module.exports = {
   mediaMaxAttempts: int(env.WAHA_MEDIA_MAX_ATTEMPTS, 5),
   mediaConcurrency: int(env.WAHA_MEDIA_CONCURRENCY, 2),
   mediaTimeoutMs: int(env.WAHA_MEDIA_TIMEOUT_MS, 180000),
+  // This many expired files in a row (newest first) means everything older has expired too.
+  mediaExpiredStreak: int(env.WAHA_MEDIA_EXPIRED_STREAK, 8),
   // With no backup in the archive, only fetch media newer than this many days.
   mediaDefaultDays: int(env.WAHA_MEDIA_DEFAULT_DAYS, 30),
 };

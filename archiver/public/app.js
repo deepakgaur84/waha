@@ -706,8 +706,23 @@ function renderStats(st) {
     box.append(row("Last sync result", `${stats.messages_seen ?? 0} read, ${stats.new_messages} new, ${stats.chat_errors ?? 0} chat errors`));
   }
   if (sync.last_error) box.append(row("Last sync error", sync.last_error));
+  const av = st.avatars;
+  if (av) {
+    box.append(row(
+      "Profile photos",
+      !av.enabled
+        ? "switched off"
+        : av.running
+          ? `fetching… ${av.done} of ${av.total} checked`
+          : `${av.with_photo} saved, ${av.without_photo} without a photo, ${av.not_checked} not checked yet`
+    ));
+    for (const msg of av.last_errors || []) box.append(row("Photo error", msg));
+  }
   for (const btn of document.querySelectorAll(".action-btn")) {
-    btn.disabled = Boolean(sync.running || imp.running || st.media_job_running);
+    // Profile photos only need WAHA to answer, so they can run while a sync or media download is busy.
+    btn.disabled = btn.dataset.action === "avatars"
+      ? Boolean(st.avatars && st.avatars.running)
+      : Boolean(sync.running || imp.running || st.media_job_running);
   }
 }
 

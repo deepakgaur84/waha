@@ -162,6 +162,9 @@ async function runSync(options = {}) {
 
     db.exec('UPDATE chats SET last_message_ts = (SELECT MAX(ts) FROM messages WHERE messages.chat_id = chats.chat_id)');
 
+    // Profile photos do not wait for the (slow) media downloads below: start them now, in the background.
+    require('./avatars').syncAvatars().catch((e) => log(`profile photos: ${e.message}`));
+
     stats.media = await processPendingMedia();
     stats.new_messages = db.prepare('SELECT COUNT(*) AS n FROM messages').get().n - before;
 

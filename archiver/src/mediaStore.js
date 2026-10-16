@@ -45,8 +45,15 @@ const markRetry = db.prepare(`
          waha_media_url = NULL
   WHERE msg_key = ?`);
 
+// WhatsApp no longer has the file (403 / 404 / 410 from its servers). Trying again cannot help.
+const EXPIRED_RE = /status code (403|404|410)\b/;
+const markExpired = db.prepare(
+  "UPDATE messages SET waha_media_attempts = ?, waha_media_state = 'failed', waha_media_url = NULL WHERE msg_key = ?"
+);
+
 // row: { msg_key, waha_id, waha_media_url, waha_media_mime }
-async function fetchAndStore(row) {
+// Returns 'ok', 'expired' (permanent: marked failed at once) or 'error' (may be temporary: retried later).
+async function attempt(row) {
   try {
     let url = row.waha_media_url;
     let mime = row.waha_media_mime;
@@ -64,18 +71,28 @@ async function fetchAndStore(row) {
     if (!buffer.length) throw new Error('empty file');
     const saved = saveBuffer(buffer, mime || contentType, url);
     markDone.run(saved.rel, mime || contentType || null, saved.size, row.msg_key);
-    return true;
+    return 'ok';
   } catch (e) {
+    if (EXPIRED_RE.test(e.message)) {
+      markExpired.run(cfg.mediaMaxAttempts, row.msg_key);
+      // One short line: the full gRPC stack trace adds nothing for an expired file.
+      console.warn(`[media] ${row.msg_key}: expired on WhatsApp's servers, marked as failed`);
+      return 'expired';
+    }
     markRetry.run(cfg.mediaMaxAttempts, row.msg_key);
-    console.warn(`[media] ${row.msg_key}: ${e.message}`);
-    return false;
+    console.warn(`[media] ${row.msg_key}: ${e.message.slice(0, 300)}`);
+    return 'error';
   }
 }
 
-async function runPool(items, size, fn) {
+async function fetchAndStore(row) {
+  return (await attempt(row)) === 'ok';
+}
+
+async function runPool(items, size, fn, shouldStop = () => false) {
   let next = 0;
   const workers = Array.from({ length: Math.max(1, size) }, async () => {
-    while (next < items.length) {
+    while (next < items.length && !shouldStop()) {
       const item = items[next];
       next += 1;
       await fn(item);
@@ -90,7 +107,7 @@ async function runPool(items, size, fn) {
 // A file is attempted at most once per run, so expired media cannot loop forever.
 async function processPendingMedia() {
   const select = db.prepare(
-    `SELECT msg_key, waha_id, waha_media_url, waha_media_mime FROM messages
+    `SELECT msg_key, ts, waha_id, waha_media_url, waha_media_mime FROM messages
      WHERE waha_media_state = 'pending' AND waha_media_attempts < ?
      ORDER BY waha_media_attempts ASC, ts DESC LIMIT ?`
   );
@@ -98,6 +115,12 @@ async function processPendingMedia() {
   let ok = 0;
   let failed = 0;
   let batchNo = 0;
+  // Newest files are tried first, so files only get older as the run goes on. When several in a row have
+  // expired, everything older has expired too: those are marked failed without waiting for each one.
+  let streak = 0;
+  let streakNewestTs = 0;
+  let tripped = false;
+  let skippedOlder = 0;
 
   for (;;) {
     // Over-fetch so rows already tried in this run can be skipped without ending the loop early.
@@ -107,14 +130,34 @@ async function processPendingMedia() {
     console.log(`[media] batch ${batchNo}: ${rows.length} file(s); ${tried.size} already attempted in this run`);
     await runPool(rows, cfg.mediaConcurrency, async (row) => {
       tried.add(row.msg_key);
-      if (await fetchAndStore(row)) ok += 1;
-      else failed += 1;
+      const result = await attempt(row);
+      if (result === 'ok') { ok += 1; streak = 0; }
+      else {
+        failed += 1;
+        if (result === 'expired') {
+          if (streak === 0) streakNewestTs = row.ts;
+          streak += 1;
+          if (streak >= cfg.mediaExpiredStreak) tripped = true;
+        } else {
+          streak = 0;
+        }
+      }
       if (tried.size % 50 === 0) console.log(`[media] progress: ${tried.size} attempted, ${ok} downloaded, ${failed} failed`);
-    });
+    }, () => tripped);
+    if (tripped) {
+      skippedOlder = db
+        .prepare("UPDATE messages SET waha_media_state = 'failed', waha_media_attempts = ? WHERE waha_media_state = 'pending' AND ts <= ?")
+        .run(cfg.mediaMaxAttempts, streakNewestTs).changes;
+      console.log(
+        `[media] ${cfg.mediaExpiredStreak} files in a row had expired on WhatsApp's servers, so older ones are assumed gone too: ` +
+        `${skippedOlder} older file(s) marked as failed without trying. "Retry failed media" in Preferences tries them again.`
+      );
+      break;
+    }
   }
 
   const left = db.prepare("SELECT COUNT(*) AS n FROM messages WHERE waha_media_state = 'pending'").get().n;
-  return { attempted: tried.size, downloaded: ok, failed_this_run: failed, pending_left: left };
+  return { attempted: tried.size, downloaded: ok, failed_this_run: failed, assumed_expired: skippedOlder, pending_left: left };
 }
 
 module.exports = { processPendingMedia, fetchAndStore, saveBuffer };
