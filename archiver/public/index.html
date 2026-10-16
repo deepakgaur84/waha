@@ -17,7 +17,7 @@
       </div>
     </div>
     <div id="mode-line"></div>
-    <input id="search" type="text" placeholder="Search chats" autocomplete="off" />
+    <input id="search" type="text" placeholder="Search chats and messages" autocomplete="off" />
     <div id="chat-list"></div>
   </aside>
   <main id="chat-pane">
@@ -77,10 +77,12 @@
         <label class="prefs-field">Sync every (minutes, 0 = only at start)
           <input id="sync-interval" type="number" min="0" max="10080" step="1" />
         </label>
-        <label class="prefs-field">Do not archive chats ending with (comma separated)
+        <label class="prefs-field">Hide and do not archive chats ending with (comma separated)
           <input id="skip-suffixes" type="text" autocomplete="off" />
         </label>
-        <p class="prefs-note">Live messages arrive by webhook regardless. The sync picks up anything missed.</p>
+        <p class="prefs-note">Chats ending with these are left out of the chat list and skipped by the WAHA sync. WhatsApp Status updates end with <code>@broadcast</code>, channels with <code>@newsletter</code>. Remove an entry to show those chats again. Messages already stored are kept.</p>
+        <label class="prefs-checkbox"><input id="fetch-avatars" type="checkbox" /> Fetch profile photos from WAHA</label>
+        <p class="prefs-note">Photos are downloaded slowly in the background after a sync, one chat at a time, and kept in the archive. Chats without a photo (or hidden by their privacy settings) show initials.</p>
       </section>
 
       <section class="prefs-section">
@@ -102,6 +104,7 @@
           <button class="action-btn" data-action="sync">Sync WAHA now</button>
           <button class="action-btn" data-action="full-sync">Full resync (re-read all history)</button>
           <button class="action-btn" data-action="retry-media">Retry failed media</button>
+          <button class="action-btn" data-action="avatars">Refresh profile photos</button>
         </div>
         <div id="action-status"></div>
       </section>

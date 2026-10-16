@@ -8,6 +8,11 @@ const state = {
   loadingOlder: false,
   messages: [],
   stickBottom: false,
+  newestCursor: null,
+  hasNewer: false,
+  loadingNewer: false,
+  highlightId: null,
+  search: { q: "", results: [], more: false, offset: 0, loading: false, error: null },
   dateFormat: "dmy_12h",
   readerMode: "ios",
   chatSort: "latest",
@@ -90,7 +95,7 @@ function dayKey(unixSeconds) {
 
 const AVATAR_COLORS = ["#00a884", "#53bdeb", "#7f66ff", "#d9658b", "#d98b3a", "#4f9d69", "#a06cd5", "#c4685a"];
 
-function avatar(name, sizeClass) {
+function avatar(name, sizeClass, jid, hasPhoto) {
   const el = document.createElement("div");
   el.className = "avatar " + sizeClass;
   const text = String(name || "?").trim();
@@ -99,6 +104,16 @@ function avatar(name, sizeClass) {
   el.style.background = AVATAR_COLORS[hash % AVATAR_COLORS.length];
   const letters = text.replace(/[^\p{L}\p{N} ]/gu, "").trim().split(/\s+/).filter(Boolean);
   el.textContent = (letters.length ? (letters[0][0] + (letters[1] ? letters[1][0] : "")) : "#").toUpperCase();
+  if (jid && hasPhoto) {
+    // The photo covers the initials; if it cannot be loaded the initials stay visible.
+    const img = document.createElement("img");
+    img.className = "avatar-photo";
+    img.loading = "lazy";
+    img.alt = "";
+    img.src = `${API}/avatar?jid=${encodeURIComponent(jid)}`;
+    img.addEventListener("error", () => img.remove());
+    el.appendChild(img);
+  }
   return el;
 }
 
@@ -139,19 +154,17 @@ function renderChatList() {
   const nameCounts = new Map();
   for (const c of state.chats) nameCounts.set(nameKey(c), (nameCounts.get(nameKey(c)) || 0) + 1);
   chatListEl.innerHTML = "";
-  if (!chats.length) {
+  if (!chats.length && !q) {
     const empty = document.createElement("div");
     empty.className = "list-empty";
-    empty.textContent = q
-      ? "No chats match your search."
-      : `No chats to show in ${MODE_NAMES[state.readerMode] || "this"} mode yet.`;
+    empty.textContent = `No chats to show in ${MODE_NAMES[state.readerMode] || "this"} mode yet.`;
     chatListEl.appendChild(empty);
     return;
   }
   for (const chat of sortedChats(chats)) {
     const div = document.createElement("div");
     div.className = "chat-item" + (state.activeChat && chat.id === state.activeChat.id ? " active" : "");
-    div.appendChild(avatar(chat.name, "avatar-sm"));
+    div.appendChild(avatar(chat.name, "avatar-sm", chat.id, chat.has_avatar));
     const wrap = document.createElement("div");
     wrap.className = "chat-item-text";
     for (const [cls, text] of [
@@ -174,28 +187,201 @@ function renderChatList() {
     div.addEventListener("click", () => openChat(chat));
     chatListEl.appendChild(div);
   }
+  renderSearchResults(q);
 }
 
-searchEl.addEventListener("input", renderChatList);
+// ---------------------------------------------------------- message search
+
+let searchTimer = null;
+
+function snippetNode(text) {
+  // The server marks matches with \u0001 ... \u0002; built with text nodes only (no innerHTML).
+  const span = document.createElement("span");
+  let open = false;
+  for (const part of String(text || "").split(/([\u0001\u0002])/)) {
+    if (part === "\u0001") open = true;
+    else if (part === "\u0002") open = false;
+    else if (part) {
+      if (open) {
+        const mark = document.createElement("mark");
+        mark.textContent = part;
+        span.appendChild(mark);
+      } else {
+        span.appendChild(document.createTextNode(part));
+      }
+    }
+  }
+  return span;
+}
+
+function renderSearchResults(q) {
+  const old = $("msg-results");
+  if (old) old.remove();
+  if (q.length < 2) return;
+  const box = document.createElement("div");
+  box.id = "msg-results";
+  const head = document.createElement("div");
+  head.className = "results-head";
+  head.textContent = `Messages containing \u201c${q}\u201d`;
+  box.appendChild(head);
+  const s = state.search;
+  if (s.q !== q) {
+    const wait = document.createElement("div");
+    wait.className = "list-empty";
+    wait.textContent = "Searching…";
+    box.appendChild(wait);
+  } else {
+    if (s.error) {
+      const err = document.createElement("div");
+      err.className = "list-empty";
+      err.textContent = s.error;
+      box.appendChild(err);
+    } else if (!s.results.length && !s.loading) {
+      const none = document.createElement("div");
+      none.className = "list-empty";
+      none.textContent = "No messages found.";
+      box.appendChild(none);
+    }
+    for (const r of s.results) {
+      const item = document.createElement("div");
+      item.className = "result-item";
+      const top = document.createElement("div");
+      top.className = "result-top";
+      const who = document.createElement("span");
+      who.className = "result-chat";
+      who.textContent = r.chat_name;
+      const when = document.createElement("span");
+      when.className = "result-date";
+      when.textContent = formatDate(r.date);
+      top.append(who, when);
+      const body = document.createElement("div");
+      body.className = "result-snippet";
+      body.append(r.is_from_me ? "You: " : "", snippetNode(r.snippet));
+      item.append(top, body);
+      item.addEventListener("click", () => openResult(r));
+      box.appendChild(item);
+    }
+    if (s.more) {
+      const more = document.createElement("button");
+      more.className = "more-results";
+      more.textContent = s.loading ? "Loading…" : "Show more";
+      more.disabled = s.loading;
+      more.addEventListener("click", () => runSearch(true));
+      box.appendChild(more);
+    }
+  }
+  chatListEl.appendChild(box);
+}
+
+async function runSearch(more) {
+  const q = searchEl.value.trim();
+  const s = state.search;
+  if (q.length < 2) {
+    state.search = { q: "", results: [], more: false, offset: 0, loading: false, error: null };
+    renderSearchResults(q);
+    return;
+  }
+  if (!more) state.search = { q, results: [], more: false, offset: 0, loading: true, error: null };
+  else s.loading = true;
+  renderSearchResults(q);
+  try {
+    const data = await api(`/search?q=${encodeURIComponent(q)}&limit=30&offset=${more ? s.offset : 0}`);
+    if (searchEl.value.trim() !== q) return; // typed something else meanwhile
+    const cur = state.search;
+    cur.results = more ? [...cur.results, ...data.results] : data.results;
+    cur.offset = cur.results.length;
+    cur.more = data.more;
+    cur.error = data.error || null;
+  } catch (e) {
+    state.search.error = e.message;
+  } finally {
+    state.search.loading = false;
+    if (searchEl.value.trim() === q) renderSearchResults(q);
+  }
+}
+
+async function openResult(r) {
+  let chat = state.chats.find((c) => c.id === r.chat_id);
+  if (!chat) chat = { id: r.chat_id, name: r.chat_name, label: r.chat_id, is_group: r.chat_id.endsWith("@g.us"), count: 0, has_avatar: false };
+  await openChat(chat, r.id);
+}
+
+searchEl.addEventListener("input", () => {
+  renderChatList();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => runSearch(false), 350);
+});
 
 // --------------------------------------------------------------- messages
 
-async function openChat(chat) {
+async function openChat(chat, aroundKey) {
   state.activeChat = chat;
   state.oldestCursor = null;
   state.noMoreOlder = false;
+  state.newestCursor = null;
+  state.hasNewer = false;
+  state.highlightId = aroundKey || null;
   state.messages = [];
   chatTitleEl.textContent = chat.name;
   chatSubEl.textContent = `${chat.label} · ${plural(chat.count, "message")}`;
   chatAvatarEl.innerHTML = "";
-  chatAvatarEl.appendChild(avatar(chat.name, "avatar-md"));
+  chatAvatarEl.appendChild(avatar(chat.name, "avatar-md", chat.id, chat.has_avatar));
   emptyHintEl.classList.add("hidden");
   renderChatList();
   messageListEl.innerHTML = "";
   appEl.classList.add("chat-active");
+  if (aroundKey) {
+    state.stickBottom = false;
+    await loadAround(chat.id, aroundKey);
+    return;
+  }
   state.stickBottom = true;
   await loadMessages();
   messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+// Opens a chat at one message (a search result): a window around it, with older and newer pages on scroll.
+async function loadAround(chatId, key) {
+  try {
+    const data = await api(`/messages/around?chat=${encodeURIComponent(chatId)}&key=${encodeURIComponent(key)}`);
+    if (!state.activeChat || state.activeChat.id !== chatId) return;
+    state.messages = data.messages;
+    state.oldestCursor = data.messages[0].cur;
+    state.newestCursor = data.messages[data.messages.length - 1].cur;
+    state.noMoreOlder = data.no_more_older;
+    state.hasNewer = data.has_newer;
+    renderMessages();
+    const target = messageListEl.querySelector(`[data-id="${CSS.escape(key)}"]`);
+    if (target) {
+      target.scrollIntoView({ block: "center" });
+      target.classList.add("flash");
+      setTimeout(() => target.classList.remove("flash"), 2500);
+    }
+  } catch (e) {
+    messageListEl.textContent = e.message;
+  }
+}
+
+async function loadNewer() {
+  if (state.loadingNewer || !state.hasNewer || !state.activeChat) return;
+  state.loadingNewer = true;
+  const chatId = state.activeChat.id;
+  try {
+    const batch = await api(`/messages?chat=${encodeURIComponent(chatId)}&after=${encodeURIComponent(state.newestCursor)}&limit=100`);
+    if (!state.activeChat || state.activeChat.id !== chatId) return;
+    if (batch.length) {
+      state.newestCursor = batch[batch.length - 1].cur;
+      state.messages = [...state.messages, ...batch];
+    }
+    if (batch.length < 100) state.hasNewer = false;
+    const top = messagesEl.scrollTop;
+    renderMessages();
+    messagesEl.scrollTop = top;
+  } catch (e) {
+    state.hasNewer = false;
+  } finally {
+    state.loadingNewer = false;
+  }
 }
 
 $("back-button").addEventListener("click", () => appEl.classList.remove("chat-active"));
@@ -227,6 +413,9 @@ messagesEl.addEventListener("scroll", async () => {
   // Photos and videos change the height as they load: keep the newest message in view
   // until the reader scrolls up on their own.
   state.stickBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+  if (state.hasNewer && messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 300) {
+    await loadNewer();
+  }
   if (messagesEl.scrollTop < 150 && !state.loadingOlder && !state.noMoreOlder) {
     const prev = messagesEl.scrollHeight;
     await loadMessages();
@@ -281,8 +470,9 @@ function senderLabel(m) {
 function renderBubble(m, grouped) {
   const row = document.createElement("div");
   row.className = "bubble-row" + (m.is_from_me ? " mine" : "") + (grouped ? " grouped" : "");
+  row.dataset.id = m.id;
   const bubble = document.createElement("div");
-  bubble.className = "bubble";
+  bubble.className = "bubble" + (m.deleted ? " deleted" : "");
 
   if (!grouped && state.activeChat.is_group) {
     const nameEl = document.createElement("div");
@@ -291,6 +481,12 @@ function renderBubble(m, grouped) {
     bubble.appendChild(nameEl);
   }
 
+  if (m.deleted) {
+    const tag = document.createElement("div");
+    tag.className = "deleted-tag";
+    tag.textContent = "Deleted by the sender (kept in your archive)";
+    bubble.appendChild(tag);
+  }
   if (m.is_media) bubble.appendChild(renderMedia(m));
   if (m.text) {
     const wrap = document.createElement("div");
@@ -303,12 +499,59 @@ function renderBubble(m, grouped) {
     bubble.appendChild(ph);
   }
 
+  if (m.reactions && m.reactions.length) {
+    const rx = document.createElement("div");
+    rx.className = "reactions";
+    for (const r of m.reactions) {
+      const chip = document.createElement("span");
+      chip.className = "reaction" + (r.mine ? " mine" : "");
+      chip.textContent = r.count > 1 ? `${r.emoji} ${r.count}` : r.emoji;
+      rx.appendChild(chip);
+    }
+    bubble.appendChild(rx);
+  }
+
   const meta = document.createElement("span");
   meta.className = "meta";
-  meta.textContent = formatDate(m.date);
+  if (m.edited) {
+    const ed = document.createElement("a");
+    ed.className = "edited-link";
+    ed.href = "#";
+    ed.textContent = "edited";
+    ed.addEventListener("click", (e) => { e.preventDefault(); toggleHistory(m, bubble); });
+    meta.append(ed, " · ");
+  }
+  meta.append(formatDate(m.date));
   bubble.appendChild(meta);
   row.appendChild(bubble);
   return row;
+}
+
+// Shows every stored version of an edited message under it.
+async function toggleHistory(m, bubble) {
+  const existing = bubble.querySelector(".edit-history");
+  if (existing) { existing.remove(); return; }
+  const box = document.createElement("div");
+  box.className = "edit-history";
+  box.textContent = "Loading…";
+  bubble.insertBefore(box, bubble.querySelector(".meta"));
+  try {
+    const versions = await api(`/messages/edits?chat=${encodeURIComponent(state.activeChat.id)}&key=${encodeURIComponent(m.id)}`);
+    box.textContent = "";
+    versions.forEach((v, i) => {
+      const line = document.createElement("div");
+      line.className = "edit-version";
+      const label = document.createElement("b");
+      label.textContent = (i === 0 ? "Original" : i === versions.length - 1 ? "Latest" : "Edit " + i) + " · " + formatDate(v.date);
+      const text = document.createElement("div");
+      text.textContent = v.text || "";
+      line.append(label, text);
+      box.appendChild(line);
+    });
+    if (!versions.length) box.textContent = "No earlier versions were stored.";
+  } catch (e) {
+    box.textContent = e.message;
+  }
 }
 
 const URL_RE = /(https?:\/\/[^\s]+)/g;
@@ -532,6 +775,7 @@ async function loadPrefsIntoPanel() {
   $("date-format-select").value = p.date_format;
   $("sync-interval").value = p.sync_interval_minutes;
   $("skip-suffixes").value = (p.skip_chat_suffixes || []).join(", ");
+  $("fetch-avatars").checked = p.fetch_avatars !== false;
   renderFolders(data.folders, p.excluded_backup_folders || []);
   renderStats(data.status);
 }
@@ -549,6 +793,7 @@ $("prefs-save").addEventListener("click", async () => {
     sync_interval_minutes: Number($("sync-interval").value),
     skip_chat_suffixes: $("skip-suffixes").value.split(",").map((s) => s.trim()).filter(Boolean),
     date_format: $("date-format-select").value,
+    fetch_avatars: $("fetch-avatars").checked,
   };
   const btn = $("prefs-save");
   btn.disabled = true;

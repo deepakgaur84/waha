@@ -7,6 +7,7 @@ const cfg = require('./config');
 const { db } = require('./db');
 const { toRow, kindOf, mediaCutoff, ingestMessages } = require('./ingest');
 const { fetchAndStore } = require('./mediaStore');
+const { APPLY } = require('./events');
 
 const router = express.Router();
 
@@ -64,6 +65,12 @@ router.post('/webhook', express.raw({ type: '*/*', limit: '25mb' }), (req, res) 
         // WAHA already downloaded live media: store our own copy now. A failure is retried by the next sync.
         const pending = row.media_state === 'pending' ? mediaRow.get(row.msg_key) : null;
         if (pending) fetchAndStore(pending).catch(() => {});
+      }
+    } else if (APPLY[event]) {
+      // Reactions, edits and deletions. A payload with an unexpected shape is kept raw instead.
+      if (!APPLY[event](body.payload)) {
+        keepUnhandled.run(Math.floor(Date.now() / 1000), event, req.body.toString('utf8').slice(0, MAX_BODY_STORED));
+        trimUnhandled.run(KEEP_UNHANDLED);
       }
     } else {
       keepUnhandled.run(Math.floor(Date.now() / 1000), event || null, req.body.toString('utf8').slice(0, MAX_BODY_STORED));

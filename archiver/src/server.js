@@ -13,8 +13,15 @@ const { router: webhookRouter } = require('./webhook');
 const { runSync, syncState } = require('./wahaSync');
 const { runBackupImport, importState } = require('./importRunner');
 const reader = require('./reader');
+const { replayStored } = require('./events');
+const { syncAvatars } = require('./avatars');
 
 const app = express();
+
+// Profile photos are fetched slowly in the background after a sync; the chat list refreshes when done.
+function refreshAvatars() {
+  syncAvatars().then(() => reader.invalidateChats()).catch((e) => console.error(`[avatars] ${e.message}`));
+}
 
 // The webhook is only for WAHA, over the Docker network. Requests that carry reverse-proxy
 // forwarding headers are refused. The signature check (WAHA_WEBHOOK_HMAC_SECRET) is the real
@@ -69,12 +76,18 @@ function schedule() {
   timer = setTimeout(async () => {
     try { await runSync(); } catch (e) { console.error(`[sync] ${e.message}`); }
     reader.invalidateChats();
+    refreshAvatars();
     schedule();
   }, minutes * 60 * 1000);
 }
 reader.setPrefsHook(schedule);
 
 async function start() {
+  // Reactions, edits and deletions that an earlier version only stored raw are applied now.
+  const replayed = replayStored();
+  if (replayed.applied || replayed.unusable) {
+    console.log(`[archiver] stored webhook events applied: ${replayed.applied}, unusable: ${replayed.unusable}`);
+  }
   if (cfg.importOnStart) {
     console.log('[archiver] BACKUP_IMPORT_ON_START=true, starting backup import');
     await runBackupImport();
@@ -91,6 +104,7 @@ async function start() {
       ok = await runSync();
     }
     reader.invalidateChats();
+    if (ok) refreshAvatars();
   }
   scheduleEnabled = true;
   schedule();

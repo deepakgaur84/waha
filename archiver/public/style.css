@@ -74,6 +74,8 @@ body {
 
 /* Initials avatar (no photos are stored in the archive yet) */
 .avatar {
+  position: relative;
+  overflow: hidden;
   border-radius: 50%;
   flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
@@ -81,6 +83,24 @@ body {
 }
 .avatar-sm { width: 40px; height: 40px; font-size: 0.95em; }
 .avatar-md { width: 36px; height: 36px; font-size: 0.9em; }
+
+.avatar-photo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+/* ---- Message search results (under the chat list) ---- */
+#msg-results { border-top: 2px solid #202c33; }
+.results-head { padding: 10px 16px 6px; font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.04em; color: #00a884; }
+.result-item { padding: 9px 16px; cursor: pointer; border-bottom: 1px solid #1a2329; }
+.result-item:hover { background: #202c33; }
+.result-top { display: flex; justify-content: space-between; gap: 10px; font-size: 0.82em; }
+.result-chat { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.result-date { color: #667781; flex-shrink: 0; font-size: 0.9em; }
+.result-snippet { margin-top: 3px; font-size: 0.82em; color: #aebac1; line-height: 1.4; word-break: break-word; }
+.result-snippet mark { background: #3d3a0b; color: #f2d96b; border-radius: 3px; padding: 0 1px; }
+.more-results {
+  display: block; width: calc(100% - 32px); margin: 10px 16px; padding: 8px; border-radius: 6px;
+  border: 1px solid #2a3942; background: #202c33; color: #e9edef; cursor: pointer;
+}
+.more-results:disabled { color: #667781; cursor: default; }
 
 /* ---- Chat pane ---- */
 #chat-pane { flex: 1; display: flex; flex-direction: column; background: #0b141a; min-width: 0; }
@@ -115,6 +135,16 @@ body {
 }
 .bubble-row.mine .bubble { background: #005c4b; }
 .sender-name { font-size: 0.78em; font-weight: 600; color: #53bdeb; margin-bottom: 2px; }
+.bubble-row.flash .bubble { outline: 2px solid #f2d96b; outline-offset: 2px; transition: outline-color 1.5s; }
+.bubble.deleted { opacity: 0.78; border: 1px dashed #5a3a3a; }
+.deleted-tag { font-size: 0.74em; color: #f08a8a; margin-bottom: 4px; font-style: italic; }
+.reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.reaction { background: rgba(0, 0, 0, 0.28); border-radius: 10px; padding: 1px 7px; font-size: 0.85em; }
+.reaction.mine { background: #0b3d33; }
+.edited-link { color: #8696a0; text-decoration: underline dotted; cursor: pointer; }
+.edit-history { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: rgba(0, 0, 0, 0.25); font-size: 0.82em; }
+.edit-version { padding: 3px 0; }
+.edit-version b { display: block; color: #8696a0; font-size: 0.85em; font-weight: 500; }
 .bubble .meta { display: block; margin-top: 4px; font-size: 0.7em; color: #8696a0; text-align: right; }
 .bubble img, .bubble video { max-width: 320px; max-height: 320px; border-radius: 6px; display: block; }
 .bubble img.sticker { max-width: 140px; max-height: 140px; }

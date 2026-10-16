@@ -30,6 +30,8 @@ const DEFAULTS = {
   sync_interval_minutes: cfg.syncIntervalMinutes,
   // Chats whose id ends with one of these are not archived.
   skip_chat_suffixes: cfg.skipChatSuffixes,
+  // Fetch profile photos from WAHA (slowly, in the background after a sync).
+  fetch_avatars: true,
 };
 
 function readFile() {
@@ -55,6 +57,7 @@ function clean(input) {
     const n = Number(src.sync_interval_minutes);
     if (Number.isFinite(n) && n >= 0 && n <= 10080) out.sync_interval_minutes = Math.round(n);
   }
+  if (typeof src.fetch_avatars === 'boolean') out.fetch_avatars = src.fetch_avatars;
   if (Array.isArray(src.skip_chat_suffixes)) {
     out.skip_chat_suffixes = src.skip_chat_suffixes.map((s) => String(s).trim()).filter(Boolean);
   }
@@ -73,6 +76,9 @@ function save(update) {
     if (update[key] !== undefined && !OPTIONS[key].includes(update[key])) {
       throw new Error(`Invalid value for ${key}: ${update[key]}`);
     }
+  }
+  if (update.fetch_avatars !== undefined && typeof update.fetch_avatars !== 'boolean') {
+    throw new Error('fetch_avatars must be true or false');
   }
   if (update.sync_interval_minutes !== undefined) {
     const n = Number(update.sync_interval_minutes);

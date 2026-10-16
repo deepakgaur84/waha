@@ -87,4 +87,9 @@ function downloadFile(url) {
   return request(u.pathname + u.search, { timeoutMs: cfg.mediaTimeoutMs, retries: 2, asBuffer: true });
 }
 
-module.exports = { getSession, getLids, getChats, getMessages, getMessageWithMedia, downloadFile, idOf };
+// GET /api/{session}/chats/{chatId}/picture -> { url } (null when there is none or privacy hides it)
+function getChatPicture(chatId) {
+  return request(`/api/${S()}/chats/${encodeURIComponent(chatId)}/picture`, { retries: 2 });
+}
+
+module.exports = { getChatPicture, getSession, getLids, getChats, getMessages, getMessageWithMedia, downloadFile, idOf };

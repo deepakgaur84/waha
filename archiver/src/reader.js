@@ -16,6 +16,7 @@ const { discoverSnapshots } = require('./backupImport');
 const { importState, runBackupImport } = require('./importRunner');
 const { runSync, syncState } = require('./wahaSync');
 const { processPendingMedia } = require('./mediaStore');
+const { avatarPath, syncAvatars, avatarState } = require('./avatars');
 
 const router = express.Router();
 router.use(express.json({ limit: '100kb' }));
@@ -24,10 +25,14 @@ const MEDIA_TYPES = new Set(['image', 'video', 'audio', 'document', 'sticker', '
 
 // ---------------------------------------------------------------- helpers
 
+// WAHA also reports the protocol messages behind edits and deletions as empty "system" rows. They are
+// shown on the original message instead, so they are left out of the lists.
+const NOT_NOISE = "NOT (m.source = 'waha' AND m.type = 'system' AND m.text IS NULL)";
+
 function modeFilter() {
   const mode = prefsStore.get().reader_mode;
-  if (mode === 'all') return { sql: '1 = 1', params: [] };
-  return { sql: '(m.backup_kind IS NULL OR m.backup_kind = ?)', params: [mode] };
+  if (mode === 'all') return { sql: NOT_NOISE, params: [] };
+  return { sql: `${NOT_NOISE} AND (m.backup_kind IS NULL OR m.backup_kind = ?)`, params: [mode] };
 }
 
 function numberFromJid(jid) {
@@ -42,14 +47,20 @@ function invalidateChats() {
 }
 
 function chatList() {
-  const mode = prefsStore.get().reader_mode;
-  if (chatCache.value && chatCache.key === mode && Date.now() - chatCache.at < 20000) return chatCache.value;
+  const prefs = prefsStore.get();
+  const mode = prefs.reader_mode;
+  // Chats whose id ends with one of the "skip" suffixes (Status updates, channels...) are hidden
+  // from the list. The stored messages are not deleted.
+  const hidden = (prefs.skip_chat_suffixes || []).map((x) => x.toLowerCase());
+  const cacheKey = `${mode}|${hidden.join(',')}`;
+  if (chatCache.value && chatCache.key === cacheKey && Date.now() - chatCache.at < 20000) return chatCache.value;
   const f = modeFilter();
   const rows = db
     .prepare(`SELECT m.chat_id AS chat_id, COUNT(*) AS n, MAX(m.ts) AS last_ts FROM messages m WHERE ${f.sql} GROUP BY m.chat_id ORDER BY last_ts DESC`)
     .all(...f.params);
   const meta = new Map(db.prepare('SELECT chat_id, kind, name FROM chats').all().map((c) => [c.chat_id, c]));
-  const value = rows.map((r) => {
+  const withPhoto = new Set(db.prepare("SELECT jid FROM avatars WHERE status = 'ok'").all().map((a) => a.jid));
+  const value = rows.filter((r) => !hidden.some((suffix) => r.chat_id.toLowerCase().endsWith(suffix))).map((r) => {
     const c = meta.get(r.chat_id) || {};
     const isGroup = c.kind === 'group' || r.chat_id.endsWith('@g.us');
     return {
@@ -59,33 +70,75 @@ function chatList() {
       label: isGroup ? 'Group' : numberFromJid(r.chat_id),
       last_date: r.last_ts,
       count: r.n,
+      has_avatar: withPhoto.has(r.chat_id),
     };
   });
-  chatCache = { key: mode, at: Date.now(), value };
+  chatCache = { key: cacheKey, at: Date.now(), value };
   return value;
 }
 
 // Messages are paged with a cursor "<ts>~<msg_key>" so several messages in the same second are never lost.
-function messagesPage(chatId, cursor, limit) {
+function parseCursor(cursor) {
+  if (!cursor) return null;
+  const i = cursor.indexOf('~');
+  const ts = Number(cursor.slice(0, i));
+  return i > 0 && Number.isFinite(ts) ? { ts, key: cursor.slice(i + 1) } : null;
+}
+
+const COLUMNS = `m.msg_key, m.stanza_id, m.ts, m.from_me, m.sender_jid, m.sender_name, m.type, m.text, m.media_title,
+                 m.media_on_disk, m.waha_media_state, m.waha_media_path, m.edited_at`;
+
+// direction 'before' (older than the cursor, newest first) or 'after' (newer than the cursor, oldest first).
+function selectRows(chatId, cursor, limit, direction) {
   const f = modeFilter();
-  let sql = `SELECT m.msg_key, m.ts, m.from_me, m.sender_jid, m.sender_name, m.type, m.text, m.media_title,
-                    m.media_on_disk, m.waha_media_state, m.waha_media_path
-             FROM messages m WHERE m.chat_id = ? AND ${f.sql}`;
+  let sql = `SELECT ${COLUMNS} FROM messages m WHERE m.chat_id = ? AND ${f.sql}`;
   const params = [chatId, ...f.params];
-  if (cursor) {
-    const i = cursor.indexOf('~');
-    const ts = Number(cursor.slice(0, i));
-    const key = cursor.slice(i + 1);
-    if (i > 0 && Number.isFinite(ts)) {
-      sql += ' AND (m.ts < ? OR (m.ts = ? AND m.msg_key < ?))';
-      params.push(ts, ts, key);
-    }
+  const c = parseCursor(cursor);
+  if (direction === 'after') {
+    if (c) { sql += ' AND (m.ts > ? OR (m.ts = ? AND m.msg_key > ?))'; params.push(c.ts, c.ts, c.key); }
+    sql += ' ORDER BY m.ts ASC, m.msg_key ASC LIMIT ?';
+    params.push(limit);
+    return db.prepare(sql).all(...params);
   }
+  if (c) { sql += ' AND (m.ts < ? OR (m.ts = ? AND m.msg_key < ?))'; params.push(c.ts, c.ts, c.key); }
   sql += ' ORDER BY m.ts DESC, m.msg_key DESC LIMIT ?';
   params.push(limit);
-  return db.prepare(sql).all(...params).reverse().map((r) => {
+  return db.prepare(sql).all(...params).reverse();
+}
+
+// Reactions, edit counts and deletions for a page of rows, looked up by message id.
+function extras(rows) {
+  const ids = [...new Set(rows.map((r) => r.stanza_id).filter(Boolean))];
+  const reactions = new Map();
+  const edits = new Map();
+  const revoked = new Set();
+  for (let i = 0; i < ids.length; i += 200) {
+    const chunk = ids.slice(i, i + 200);
+    const marks = chunk.map(() => '?').join(',');
+    for (const r of db.prepare(`SELECT stanza_id, emoji, reactor FROM message_reactions WHERE stanza_id IN (${marks})`).all(...chunk)) {
+      if (!reactions.has(r.stanza_id)) reactions.set(r.stanza_id, new Map());
+      const byEmoji = reactions.get(r.stanza_id);
+      const e = byEmoji.get(r.emoji) || { emoji: r.emoji, count: 0, mine: false };
+      e.count += 1;
+      if (r.reactor === 'me') e.mine = true;
+      byEmoji.set(r.emoji, e);
+    }
+    for (const r of db.prepare(`SELECT stanza_id, COUNT(*) AS n FROM message_edits WHERE stanza_id IN (${marks}) GROUP BY stanza_id`).all(...chunk)) {
+      edits.set(r.stanza_id, r.n);
+    }
+    for (const r of db.prepare(`SELECT stanza_id FROM message_revokes WHERE stanza_id IN (${marks})`).all(...chunk)) {
+      revoked.add(r.stanza_id);
+    }
+  }
+  return { reactions, edits, revoked };
+}
+
+function toMessages(rows) {
+  const x = extras(rows);
+  return rows.map((r) => {
     const isMedia = MEDIA_TYPES.has(r.type);
     const available = (r.waha_media_state === 'done' && r.waha_media_path) || r.media_on_disk === 1;
+    const rx = r.stanza_id && x.reactions.get(r.stanza_id);
     return {
       cur: `${r.ts}~${r.msg_key}`,
       id: r.msg_key,
@@ -99,8 +152,88 @@ function messagesPage(chatId, cursor, limit) {
       has_media: Boolean(isMedia && available),
       media_state: !isMedia ? null : available ? 'ok' : r.waha_media_state === 'pending' ? 'pending' : 'missing',
       media_title: r.media_title,
+      edited: Boolean(r.edited_at),
+      deleted: Boolean(r.stanza_id && x.revoked.has(r.stanza_id)),
+      reactions: rx ? [...rx.values()].sort((a, b) => b.count - a.count) : [],
     };
   });
+}
+
+function messagesPage(chatId, cursor, limit, direction = 'before') {
+  return toMessages(selectRows(chatId, cursor, limit, direction));
+}
+
+// A window of messages around one message (used when a search result is opened).
+function messagesAround(chatId, key, each) {
+  const f = modeFilter();
+  const target = db
+    .prepare(`SELECT ${COLUMNS} FROM messages m WHERE m.chat_id = ? AND m.msg_key = ? AND ${f.sql}`)
+    .get(chatId, key, ...f.params);
+  if (!target) return null;
+  const cursor = `${target.ts}~${target.msg_key}`;
+  const older = selectRows(chatId, cursor, each, 'before');
+  const newer = selectRows(chatId, cursor, each, 'after');
+  return {
+    messages: toMessages([...older, target, ...newer]),
+    no_more_older: older.length < each,
+    has_newer: newer.length === each,
+  };
+}
+
+// Every stored version of an edited message, oldest first.
+function editHistory(chatId, key) {
+  const row = db.prepare('SELECT stanza_id FROM messages WHERE chat_id = ? AND msg_key = ?').get(chatId, key);
+  if (!row || !row.stanza_id) return [];
+  return db
+    .prepare('SELECT ts AS date, text FROM message_edits WHERE stanza_id = ? ORDER BY ts')
+    .all(row.stanza_id);
+}
+
+// ------------------------------------------------------------------ search
+
+function likeEscape(s) { return s.replace(/[\\%_]/g, (c) => `\\${c}`); }
+
+function searchMessages(q, chatId, limit, offset) {
+  const tokens = String(q || '').match(/[\p{L}\p{N}]+/gu) || [];
+  if (!tokens.length) return { results: [], more: false };
+  // Every word must appear; the words may be partial ("birth" finds "birthday").
+  const match = tokens.slice(0, 8).map((t) => `"${t}"*`).join(' ');
+  const f = modeFilter();
+  const hidden = (prefsStore.get().skip_chat_suffixes || []).map((x) => x.toLowerCase());
+  let sql = `SELECT m.msg_key, m.chat_id, m.ts, m.from_me, m.type,
+                    snippet(messages_fts, -1, char(1), char(2), '…', 14) AS snip
+             FROM messages_fts JOIN messages m ON m.rowid = messages_fts.rowid
+             WHERE messages_fts MATCH ? AND ${f.sql}`;
+  const params = [match, ...f.params];
+  if (chatId) { sql += ' AND m.chat_id = ?'; params.push(chatId); }
+  for (const suffix of hidden) {
+    sql += " AND lower(m.chat_id) NOT LIKE ? ESCAPE '\\'";
+    params.push(`%${likeEscape(suffix)}`);
+  }
+  sql += ' ORDER BY m.ts DESC LIMIT ? OFFSET ?';
+  params.push(limit + 1, offset);
+  let rows;
+  try {
+    rows = db.prepare(sql).all(...params);
+  } catch (e) {
+    return { results: [], more: false, error: 'That search could not be run.' };
+  }
+  const more = rows.length > limit;
+  const names = new Map(chatList().map((c) => [c.id, c]));
+  return {
+    more,
+    results: rows.slice(0, limit).map((r) => {
+      const c = names.get(r.chat_id) || {};
+      return {
+        id: r.msg_key,
+        chat_id: r.chat_id,
+        chat_name: c.name || numberFromJid(r.chat_id),
+        date: r.ts,
+        is_from_me: r.from_me === 1,
+        snippet: r.snip,
+      };
+    }),
+  };
 }
 
 // ------------------------------------------------------------------ media
@@ -162,7 +295,34 @@ router.get('/messages', (req, res) => {
   const chat = String(req.query.chat || '');
   if (!chat) return res.status(400).json({ error: 'chat is required' });
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 300);
+  if (req.query.after) return res.json(messagesPage(chat, String(req.query.after), limit, 'after'));
   return res.json(messagesPage(chat, req.query.before ? String(req.query.before) : null, limit));
+});
+
+router.get('/messages/around', (req, res) => {
+  const chat = String(req.query.chat || '');
+  const key = String(req.query.key || '');
+  if (!chat || !key) return res.status(400).json({ error: 'chat and key are required' });
+  const found = messagesAround(chat, key, 40);
+  if (!found) return res.status(404).json({ error: 'That message is not available in the current reader mode.' });
+  return res.json(found);
+});
+
+router.get('/messages/edits', (req, res) => {
+  res.json(editHistory(String(req.query.chat || ''), String(req.query.key || '')));
+});
+
+router.get('/search', (req, res) => {
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 30, 1), 100);
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+  res.json(searchMessages(req.query.q, req.query.chat ? String(req.query.chat) : null, limit, offset));
+});
+
+router.get('/avatar', (req, res) => {
+  const abs = avatarPath(String(req.query.jid || ''));
+  if (!abs) return res.status(404).end();
+  res.set('Cache-Control', 'private, max-age=86400');
+  return res.type('image/jpeg').sendFile(abs, { dotfiles: 'allow' });
 });
 
 router.get('/media', (req, res) => {
@@ -276,6 +436,12 @@ router.post('/actions/:name', (req, res) => {
       .catch((e) => console.error(`[media] retry failed: ${e.message}`))
       .finally(() => { mediaJob.running = false; });
     return res.status(202).json({ started: `media retry (${reset} failed file(s) reset)` });
+  }
+  if (name === 'avatars') {
+    if (avatarState.running) return busy();
+    db.prepare("UPDATE avatars SET checked_at = 0").run(); // look at every chat again
+    syncAvatars().then(invalidateChats).catch(() => {});
+    return res.status(202).json({ started: 'profile photo refresh' });
   }
   return res.status(404).json({ error: 'Unknown action' });
 });

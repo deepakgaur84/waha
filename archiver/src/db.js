@@ -108,4 +108,53 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_messages_media_state ON messages (waha_m
 addColumn('messages', 'backup_kind', 'TEXT');
 db.exec("UPDATE messages SET backup_kind = 'ios' WHERE backup_kind IS NULL AND first_snapshot IS NOT NULL");
 
+// Stage 4: reactions, edits, deletions, profile photos and message search.
+// Reactions/edits/deletions are keyed by the WhatsApp message id (stanza), not by msg_key, so they
+// attach correctly even when the event is stored before the message itself or the chat is merged.
+addColumn('messages', 'edited_at', 'INTEGER');   // unix seconds of the newest edit (text = newest text)
+db.exec(`
+CREATE TABLE IF NOT EXISTS message_reactions (
+  stanza_id TEXT NOT NULL,
+  reactor   TEXT NOT NULL,             -- 'me' or the reacting person's JID
+  emoji     TEXT NOT NULL,
+  ts        INTEGER NOT NULL,
+  PRIMARY KEY (stanza_id, reactor)
+);
+CREATE TABLE IF NOT EXISTS message_edits (   -- every version of an edited message, original included
+  stanza_id TEXT NOT NULL,
+  ts        INTEGER NOT NULL,
+  text      TEXT,
+  PRIMARY KEY (stanza_id, ts)
+);
+CREATE TABLE IF NOT EXISTS message_revokes ( -- messages the sender deleted (the archive keeps the content)
+  stanza_id TEXT PRIMARY KEY,
+  ts        INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS avatars (
+  jid        TEXT PRIMARY KEY,
+  file       TEXT,                     -- relative to MEDIA_DIR/avatars
+  status     TEXT NOT NULL,            -- ok | none (no picture or hidden by privacy)
+  checked_at INTEGER NOT NULL
+);
+`);
+
+// Full-text index over the message text (SQLite FTS5, external content: no second copy of the text).
+const hadFts = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'messages_fts'").get();
+db.exec(`
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+  text, media_title, content='messages', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2'
+);
+CREATE TRIGGER IF NOT EXISTS messages_fts_ai AFTER INSERT ON messages BEGIN
+  INSERT INTO messages_fts(rowid, text, media_title) VALUES (new.rowid, new.text, new.media_title);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, text, media_title) VALUES ('delete', old.rowid, old.text, old.media_title);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_fts_au AFTER UPDATE OF text, media_title ON messages BEGIN
+  INSERT INTO messages_fts(messages_fts, rowid, text, media_title) VALUES ('delete', old.rowid, old.text, old.media_title);
+  INSERT INTO messages_fts(rowid, text, media_title) VALUES (new.rowid, new.text, new.media_title);
+END;
+`);
+if (!hadFts) db.exec("INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')"); // first start: index what is already stored
+
 module.exports = { db };
