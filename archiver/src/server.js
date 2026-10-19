@@ -17,7 +17,7 @@ const { replayStored } = require('./events');
 const { syncAvatars, setAfterRun } = require('./avatars');
 
 // Shown at start-up so the log tells you which version is really running.
-const BUILD = 'stage5.0 (Android backup import, WAHA_ENABLED switch)';
+const BUILD = 'stage5.2 (Auto reader mode, first-run README)';
 
 const app = express();
 

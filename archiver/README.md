@@ -105,14 +105,28 @@ section) is how names and photos arrive. Media that the phone never downloaded i
 
 A decrypted `msgstore.db` placed in `Databases` is used in preference to the encrypted file. You do not need one.
 
-## 4. Link the account to WAHA (both account types)
+## 4. Link the account to WAHA (first run, both account types)
 
-1. Open the WAHA dashboard for this stack, signing in with `WAHA_DASHBOARD_USERNAME` / `WAHA_DASHBOARD_PASSWORD`.
-2. Start the session named `default`. A QR code appears.
-3. On the phone: WhatsApp -> Settings -> **Linked devices** -> Link a device, then scan the QR code.
-4. Wait for the session to reach **WORKING**.
-5. The archiver's next sync pulls history, names and photos. It retries every 2 minutes while WAHA starts or the
-   session is not ready. After that it syncs on the interval set in Preferences.
+`WAHA_ENABLED` is `true` by default, so a stack runs WAHA unless you set it to `false` (backup-only stack).
+
+1. **Make the API key.** Before the first deploy, set `WAHA_API_KEY` in the stack's environment to a long random
+   string (30 or more letters and digits; a password manager can make one). The compose file gives the same value to
+   WAHA and to the archiver, so you never enter it in two places. Keep it with your other secrets.
+2. **Set the other secrets** (`WAHA_DASHBOARD_PASSWORD`, `WHATSAPP_SWAGGER_PASSWORD`, `WAHA_WEBHOOK_HMAC_SECRET`) and deploy.
+3. **Wait for WAHA to start.** On this NAS the first start takes about 3 minutes. Until then the dashboard address
+   shows a gateway error (502 or 521). Do not restart it. The WAHA log ends the start-up with
+   `WhatsApp HTTP API is running on: http://[::1]:3000`.
+4. **Open the WAHA dashboard** (`/dashboard` on the stack's hostname) and sign in with `WAHA_DASHBOARD_USERNAME`
+   (default `admin`) and `WAHA_DASHBOARD_PASSWORD`. If it asks for an API key, paste the value of `WAHA_API_KEY`.
+5. **Create the session.** Add a session and name it exactly `default`. The archiver only looks for a session named
+   `default`. Any other name gives `404` lines for `/api/sessions/default` in the WAHA log.
+6. **Start the session.** A QR code appears.
+7. **Scan it on the phone:** WhatsApp -> Settings -> **Linked devices** -> Link a device. WAHA then downloads history
+   and media, which can take a while on a slow NAS. Keep the phone online.
+8. **Wait for WORKING** on the session in the dashboard.
+9. **Check the archiver.** Its next sync pulls history, names and photos. It retries every 2 minutes while WAHA starts or
+   the session is not ready, then follows the interval in Preferences. Use *Sync WAHA now* in Preferences to start it at once.
+   The WAHA log line `Successfully paired ...` followed by `history sync` lines shows the link worked.
 
 WAHA stays linked to the account until you unlink it (WhatsApp -> Linked devices on the phone).
 
@@ -120,7 +134,9 @@ WAHA stays linked to the account until you unlink it (WhatsApp -> Linked devices
 
 Open the stack's reader hostname. Behaviour settings live in the reader (the menu icon next to *Chats*), not in `.env`:
 
-- **Reader mode:** show iOS backups, Android backups, or all. WAHA-only (live) messages show in every mode.
+- **Reader mode:** *Auto* (the default) looks at the backup folders and shows iOS backups when only iOS backups are
+  found, Android backups when only Android backups are found, and everything when both are. You can also pick iOS,
+  Android or all yourself. The reader header shows what Auto chose. WAHA-only (live) messages show in every mode.
 - **Backup import mode and excluded backup folders:** which snapshots are read.
 - **Hide and do not archive chats ending with:** for example `@newsletter`, `@broadcast`, or the Status chat.
 - **Sync interval, profile photos, media retry:** WAHA sync timing, photo fetching, and *Retry failed media*.
@@ -134,6 +150,8 @@ Open the stack's reader hostname. Behaviour settings live in the reader (the men
 | `is encrypted: set ANDROID_KEY` | The Android backup is `.crypt15` and the key is not set in `.env`. |
 | `wrong key for this backup` | The key does not match that backup. Backups made before the key was regenerated need the old key. |
 | `is a crypt14 backup` | Turn on end-to-end encrypted backup in WhatsApp and make a new backup. |
+| `GOWS did not start after N ms` in the WAHA log | WAHA's helper started too slowly. Set `WAHA_GOWS_START_TIMEOUT_MS=180000`, redeploy, and wait a few minutes. |
+| `404` for `/api/sessions/default` in the WAHA log | No session named `default` exists. Create it in the dashboard (section 4, step 5). |
 | `WAHA 401` in the log | `WAHA_API_KEY` differs between the archiver and WAHA, or this stack has no WAHA container to talk to (set `WAHA_ENABLED=false` for a backup-only stack). |
 | WAHA sync keeps retrying | The session is not WORKING yet (not linked, or still starting). |
 | Chat names show as numbers | Normal for Android backups until WAHA is linked and has synced. |

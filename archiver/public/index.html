@@ -47,10 +47,11 @@
 
       <section class="prefs-section">
         <h3>Backup reader mode</h3>
-        <label class="prefs-radio"><input type="radio" name="reader_mode" value="ios" /> iOS backups (default)</label>
+        <label class="prefs-radio"><input type="radio" name="reader_mode" value="auto" /> Auto (default): pick from the backup folders</label>
+        <label class="prefs-radio"><input type="radio" name="reader_mode" value="ios" /> iOS backups</label>
         <label class="prefs-radio"><input type="radio" name="reader_mode" value="android" /> Android backups</label>
-        <label class="prefs-radio"><input type="radio" name="reader_mode" value="all" /> All</label>
-        <p class="prefs-note">Decides which backups fill the chat list. Messages that only WAHA has are shown in every mode. Applies immediately.</p>
+        <label class="prefs-radio"><input type="radio" name="reader_mode" value="all" /> All backups</label>
+        <p class="prefs-note">Decides which backups fill the chat list. Auto shows iOS backups when only iOS backups are found, Android backups when only Android backups are found, and everything when both are. Messages that only WAHA has are shown in every mode. Applies immediately.</p>
       </section>
 
       <section class="prefs-section">
@@ -65,15 +66,16 @@
       <section class="prefs-section">
         <h3>Backup folders</h3>
         <div id="folder-list"></div>
-        <p class="prefs-note">Untick a folder to make the importer skip it for good. Folders without a <code>Manifest.db</code> (Android, test or other) are never read.</p>
+        <p class="prefs-note">Untick a folder to make the importer skip it for good. iOS backups (a folder with <code>Manifest.db</code>) and Android backups (a <code>Databases</code> folder with <code>msgstore.db.crypt15</code>) are read. Any other folder is ignored.</p>
         <div class="prefs-subhead">Import mode</div>
-        <label class="prefs-radio"><input type="radio" name="backup_import_mode" value="latest" /> Latest iOS backup only (backups are cumulative)</label>
-        <label class="prefs-radio"><input type="radio" name="backup_import_mode" value="all" /> Every iOS backup, oldest first</label>
-        <p class="prefs-note">Used by the next backup import.</p>
+        <label class="prefs-radio"><input type="radio" name="backup_import_mode" value="latest" /> Latest backup only (backups are cumulative)</label>
+        <label class="prefs-radio"><input type="radio" name="backup_import_mode" value="all" /> Every backup, oldest first</label>
+        <p class="prefs-note">Applies separately to iOS and to Android backups. Used by the next backup import.</p>
       </section>
 
       <section class="prefs-section">
         <h3>WAHA sync</h3>
+        <p id="waha-off-note" class="prefs-note hidden">WAHA is switched off for this stack (<code>WAHA_ENABLED=false</code>), so nothing below is used. The reader shows backups only.</p>
         <label class="prefs-field">Sync every (minutes, 0 = only at start)
           <input id="sync-interval" type="number" min="0" max="10080" step="1" />
         </label>

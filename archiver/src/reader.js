@@ -5,6 +5,7 @@
 //   ios      -> messages from iOS backups, plus messages that only WAHA has
 //   android  -> messages from Android backups, plus messages that only WAHA has
 //   all      -> everything
+//   auto     -> decided from the backup folders: iOS only, Android only, or all when both (or none)
 // WAHA-only messages (backup_kind IS NULL) are live data, so they show in every mode.
 const express = require('express');
 const fs = require('fs');
@@ -13,6 +14,7 @@ const cfg = require('./config');
 const { db } = require('./db');
 const prefsStore = require('./prefs');
 const { discoverSnapshots } = require('./backupImport');
+const { discoverAndroidSnapshots } = require('./androidImport');
 const { importState, runBackupImport } = require('./importRunner');
 const { runSync, syncState } = require('./wahaSync');
 const { processPendingMedia } = require('./mediaStore');
@@ -29,8 +31,24 @@ const MEDIA_TYPES = new Set(['image', 'video', 'audio', 'document', 'sticker', '
 // shown on the original message instead, so they are left out of the lists.
 const NOT_NOISE = "NOT (m.source = 'waha' AND m.type = 'system' AND m.text IS NULL)";
 
+// Auto mode: decided from the backup folders the importer reads (folders excluded in Preferences do not count).
+// Only iOS backups -> ios, only Android backups -> android, both or none -> all.
+let autoCache = { at: 0, value: null };
+function effectiveMode() {
+  const chosen = prefsStore.get().reader_mode;
+  if (chosen !== 'auto') return chosen;
+  if (autoCache.value && Date.now() - autoCache.at < 10000) return autoCache.value;
+  const excluded = prefsStore.get().excluded_backup_folders || [];
+  const kinds = new Set(backupFolders().filter((f) => !excluded.includes(f.name)).map((f) => f.kind));
+  const ios = kinds.has('ios');
+  const android = kinds.has('android');
+  const value = ios && !android ? 'ios' : android && !ios ? 'android' : 'all';
+  autoCache = { at: Date.now(), value };
+  return value;
+}
+
 function modeFilter() {
-  const mode = prefsStore.get().reader_mode;
+  const mode = effectiveMode();
   if (mode === 'all') return { sql: NOT_NOISE, params: [] };
   return { sql: `${NOT_NOISE} AND (m.backup_kind IS NULL OR m.backup_kind = ?)`, params: [mode] };
 }
@@ -43,12 +61,13 @@ function numberFromJid(jid) {
 
 let chatCache = { key: '', at: 0, value: null };
 function invalidateChats() {
+  autoCache = { at: 0, value: null };
   chatCache = { key: '', at: 0, value: null };
 }
 
 function chatList() {
   const prefs = prefsStore.get();
-  const mode = prefs.reader_mode;
+  const mode = effectiveMode();
   // Chats whose id ends with one of the "skip" suffixes (Status updates, channels...) are hidden
   // from the list. The stored messages are not deleted.
   const hidden = (prefs.skip_chat_suffixes || []).map((x) => x.toLowerCase());
@@ -300,6 +319,11 @@ router.get('/chats', (_req, res) => {
   res.json(chatList());
 });
 
+// The reader mode that is in effect (differs from the saved choice when that choice is "auto").
+router.get('/mode', (_req, res) => {
+  res.json({ chosen: prefsStore.get().reader_mode, effective: effectiveMode() });
+});
+
 router.get('/messages', (req, res) => {
   const chat = String(req.query.chat || '');
   if (!chat) return res.status(400).json({ error: 'chat is required' });
@@ -353,17 +377,19 @@ function backupFolders() {
   let entries = [];
   try { entries = fs.readdirSync(cfg.backupRoot, { withFileTypes: true }); } catch (_) { return out; }
   const ios = new Set(discoverSnapshots(cfg.backupRoot));
+  const android = new Set(discoverAndroidSnapshots(cfg.backupRoot));
   for (const e of entries) {
     if (!e.isDirectory()) continue;
     const dir = path.join(cfg.backupRoot, e.name);
     let kind = 'other';
     if (ios.has(e.name)) kind = 'ios';
+    else if (android.has(e.name)) kind = 'android';
     else if (fs.existsSync(path.join(dir, 'archive.db'))) kind = 'archive';
     else {
       const looksAndroid = (d) => {
         try { return fs.readdirSync(d).some((f) => /^msgstore.*\.(db|crypt\d+)$/i.test(f)); } catch (_) { return false; }
       };
-      if (looksAndroid(path.join(dir, 'Databases')) || looksAndroid(dir)) kind = 'android';
+      if (looksAndroid(path.join(dir, 'Databases')) || looksAndroid(dir)) kind = 'android_unreadable';
     }
     out.push({ name: e.name, kind });
   }
@@ -382,6 +408,7 @@ function statusInfo() {
     waha_media: db.prepare("SELECT waha_media_state AS state, COUNT(*) AS n FROM messages WHERE waha_media_state IS NOT NULL GROUP BY waha_media_state").all(),
     oldest: db.prepare('SELECT MIN(ts) AS t FROM messages').get().t,
     newest: db.prepare('SELECT MAX(ts) AS t FROM messages').get().t,
+    waha_enabled: cfg.wahaEnabled,
     import: importState(),
     sync: {
       running: syncState.running,

@@ -14,7 +14,8 @@ const state = {
   highlightId: null,
   search: { q: "", results: [], more: false, offset: 0, loading: false, error: null },
   dateFormat: "dmy_12h",
-  readerMode: "ios",
+  readerMode: "auto",
+  effectiveMode: "all",
   chatSort: "latest",
   prefs: null,
   folders: [],
@@ -123,12 +124,15 @@ function updateModeLine() {
   modeLineEl.textContent = "";
   modeLineEl.append("Reader mode: ");
   const b = document.createElement("b");
-  b.textContent = MODE_NAMES[state.readerMode] || state.readerMode;
+  const shown = MODE_NAMES[state.effectiveMode] || state.effectiveMode;
+  b.textContent = state.readerMode === "auto" ? `Auto · ${shown}` : shown;
   modeLineEl.append(b, ` · ${state.chats.length} chats`);
 }
 
 async function loadChats() {
-  state.chats = await api("/chats");
+  const [chats, mode] = await Promise.all([api("/chats"), api("/mode").catch(() => null)]);
+  state.chats = chats;
+  if (mode) state.effectiveMode = mode.effective;
   updateModeLine();
   renderChatList();
 }
@@ -157,7 +161,7 @@ function renderChatList() {
   if (!chats.length && !q) {
     const empty = document.createElement("div");
     empty.className = "list-empty";
-    empty.textContent = `No chats to show in ${MODE_NAMES[state.readerMode] || "this"} mode yet.`;
+    empty.textContent = `No chats to show in ${MODE_NAMES[state.effectiveMode] || "this"} mode yet.`;
     chatListEl.appendChild(empty);
     return;
   }
@@ -698,16 +702,16 @@ function renderStats(st) {
     row("Chats", st.chats.toLocaleString()),
     row("Date range", st.oldest ? `${formatDay(st.oldest)} – ${formatDay(st.newest)}` : "–"),
     row("By source", bySource || "–"),
-    row("WAHA media", media),
+    ...(st.waha_enabled === false ? [] : [row("WAHA media", media)]),
     row("Backup import", imp.running ? "running…" : imp.finished_at ? `finished ${new Date(imp.finished_at).toLocaleString()}` : "not run since start"),
-    row("WAHA sync", sync.running ? "running…" : sync.last_status ? `${sync.last_status}${sync.last_finished ? " " + new Date(sync.last_finished).toLocaleString() : ""}` : "not run yet"),
+    row("WAHA sync", st.waha_enabled === false ? "switched off" : sync.running ? "running…" : sync.last_status ? `${sync.last_status}${sync.last_finished ? " " + new Date(sync.last_finished).toLocaleString() : ""}` : "not run yet"),
   );
-  if (stats && stats.new_messages !== undefined) {
+  if (st.waha_enabled !== false && stats && stats.new_messages !== undefined) {
     box.append(row("Last sync result", `${stats.messages_seen ?? 0} read, ${stats.new_messages} new, ${stats.chat_errors ?? 0} chat errors`));
   }
-  if (sync.last_error) box.append(row("Last sync error", sync.last_error));
+  if (st.waha_enabled !== false && sync.last_error) box.append(row("Last sync error", sync.last_error));
   const av = st.avatars;
-  if (av) {
+  if (av && st.waha_enabled !== false) {
     box.append(row(
       "Profile photos",
       !av.enabled
@@ -720,10 +724,13 @@ function renderStats(st) {
   }
   for (const btn of document.querySelectorAll(".action-btn")) {
     // Profile photos only need WAHA to answer, so they can run while a sync or media download is busy.
+    const wahaAction = ["sync", "full-sync", "retry-media", "avatars"].includes(btn.dataset.action);
+    btn.classList.toggle("hidden", st.waha_enabled === false && wahaAction);
     btn.disabled = btn.dataset.action === "avatars"
       ? Boolean(st.avatars && st.avatars.running)
       : Boolean(sync.running || imp.running || st.media_job_running);
   }
+  $("waha-off-note").classList.toggle("hidden", st.waha_enabled !== false);
 }
 
 async function refreshStats() {
@@ -732,7 +739,8 @@ async function refreshStats() {
 
 const KIND_BADGES = {
   ios: ["iOS backup", "ios"],
-  android: ["Android – not read", "android"],
+  android: ["Android backup", "android"],
+  android_unreadable: ["Android – no usable backup file", ""],
   archive: ["archive data – not read", ""],
   other: ["other – not read", ""],
 };
@@ -749,10 +757,10 @@ function renderFolders(folders, excluded) {
   }
   for (const f of folders) {
     const rowEl = document.createElement("label");
-    const isIos = f.kind === "ios";
+    const readable = f.kind === "ios" || f.kind === "android";
     const off = excluded.includes(f.name);
-    rowEl.className = "folder-row" + (isIos && off ? " disabled" : "");
-    if (isIos) {
+    rowEl.className = "folder-row" + (readable && off ? " disabled" : "");
+    if (readable) {
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.value = f.name;
@@ -867,7 +875,7 @@ async function init() {
     const data = await api("/preferences");
     state.prefs = data.preferences;
     state.dateFormat = data.preferences.date_format || "dmy_12h";
-    state.readerMode = data.preferences.reader_mode || "ios";
+    state.readerMode = data.preferences.reader_mode || "auto";
     state.chatSort = data.preferences.chat_sort || "latest";
     if (data.logout_url) {
       const a = $("logout-link");

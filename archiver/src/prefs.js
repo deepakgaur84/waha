@@ -10,15 +10,16 @@ const cfg = require('./config');
 const FILE = process.env.PREFERENCES_PATH || path.join(cfg.dataDir, 'preferences.json');
 
 const OPTIONS = {
-  reader_mode: ['ios', 'android', 'all'],
+  reader_mode: ['auto', 'ios', 'android', 'all'],
   chat_sort: ['latest', 'oldest', 'name_asc', 'name_desc'],
   date_format: ['dmy_12h', 'ymd_24h', 'mdy_12h'],
   backup_import_mode: ['latest', 'all'],
 };
 
 const DEFAULTS = {
-  // Which backup source the reader shows. Messages that only WAHA has are shown in every mode.
-  reader_mode: 'ios',
+  // Which backup source the reader shows. auto = decided from the backup folders (iOS only, Android only, or both = all).
+  // Messages that only WAHA has are shown in every mode.
+  reader_mode: 'auto',
   date_format: 'dmy_12h',
   // Order of the chat list: latest = newest message on top, oldest = oldest last-message on top, name_asc = A-Z, name_desc = Z-A.
   chat_sort: 'latest',
