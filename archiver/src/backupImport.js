@@ -464,6 +464,9 @@ async function runImport() {
     }
   }
 
+  // WhatsApp's own notices ("+0", jid 0@c.us) are not a conversation: drop any that an earlier version imported.
+  db.exec("DELETE FROM messages WHERE chat_id = '0@c.us'; DELETE FROM chats WHERE chat_id = '0@c.us';");
+
   // Rows from an iOS snapshot that were not tagged yet (Android rows are tagged when they are written).
   db.exec("UPDATE messages SET backup_kind = 'ios' WHERE backup_kind IS NULL AND first_snapshot IS NOT NULL");
   db.exec('UPDATE chats SET last_message_ts = (SELECT MAX(ts) FROM messages WHERE messages.chat_id = chats.chat_id)');

@@ -167,6 +167,7 @@ async function importAndroidSnapshot(root, name) {
     for (const c of adb.prepare('SELECT _id, jid_row_id, subject FROM chat').all()) {
       const raw = jids.get(c.jid_row_id);
       if (!raw || SKIP_SERVERS.has(raw.server)) continue;
+      if (raw.server === 's.whatsapp.net' && raw.user === '0') continue; // WhatsApp's own notices (shown as "+0")
       const id = jidOf(c.jid_row_id);
       if (!id) continue;
       const kind = raw.server === 'g.us' ? 'group' : 'private';
