@@ -51,7 +51,11 @@ export class GowsBootstrap implements EngineBootstrap {
       this.logger.info(`GOWS stopped, exiting...`);
       process.kill(process.pid, 'SIGTERM');
     });
-    await this.gows.waitWhenReady(10_000);
+    // Fork change: the 10 s limit is too short on a slow or busy machine, where the Node process can be
+    // stalled for longer than that right after GOWS starts. Same default as upstream; set
+    // WAHA_GOWS_START_TIMEOUT_MS to give it longer.
+    const timeoutMs = parseInt(process.env.WAHA_GOWS_START_TIMEOUT_MS ?? '', 10);
+    await this.gows.waitWhenReady(timeoutMs > 0 ? timeoutMs : 10_000);
     await this.checkSocket(this.config.socket);
     return;
   }
