@@ -397,7 +397,7 @@ function writeReport(report) {
 
 // ------------------------------------------------------------------- driver
 
-function runImport() {
+async function runImport() {
   const prefs = prefsStore.get(); // read fresh: a change in the reader applies to the next run
   const android = require('./androidImport');
   const sources = [
@@ -447,7 +447,7 @@ function runImport() {
          ON CONFLICT(snapshot) DO UPDATE SET started_at = excluded.started_at, finished_at = NULL, status = 'running', stats_json = NULL`
       ).run(name, Math.floor(Date.now() / 1000));
       try {
-        const stats = source.importFn(cfg.backupRoot, name);
+        const stats = await source.importFn(cfg.backupRoot, name);
         db.prepare("UPDATE import_runs SET status = 'done', finished_at = ?, stats_json = ? WHERE snapshot = ?")
           .run(Math.floor(Date.now() / 1000), JSON.stringify(stats), name);
         allStats.push(stats);
@@ -493,11 +493,8 @@ if (require.main === module) {
       process.exit(code);
     }
   };
-  try {
-    runImport();
-    finish(0);
-  } catch (e) {
+  runImport().then(() => finish(0)).catch((e) => {
     console.error(`[import] FAILED: ${e.stack || e.message}`);
     finish(1);
-  }
+  });
 }

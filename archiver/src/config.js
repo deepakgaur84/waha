@@ -42,6 +42,10 @@ module.exports = {
   // WAHA message-id codes to look for after the import (proof of id matching).
   probeStanzaIds: list(env.PROBE_STANZA_IDS).map((s) => s.toUpperCase()),
 
+  // Android end-to-end encrypted (crypt15) backups: a file holding the 64-digit key, mounted read-only.
+  // Empty = only already decrypted msgstore.db files are read.
+  androidKeyFile: env.ANDROID_KEY_FILE || '',
+
   // ---- Stage 2: WAHA ---------------------------------------------------------
   // false = a backup-only stack (for example an Android test): no WAHA sync, photos or schedule.
   wahaEnabled: bool(env.WAHA_ENABLED, true),

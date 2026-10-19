@@ -1,10 +1,14 @@
 // Imports a decrypted Android WhatsApp backup (msgstore.db) into the archive database.
 //
-// Decryption happens OUTSIDE the archiver (wa-crypt-tools, see the README), so the key never
-// enters this container. A backup folder is recognised by a decrypted database at
-//   <folder>/Databases/msgstore.db     (the phone's own layout)   or   <folder>/msgstore.db
-// and the media files are read from <folder>/Media/... (the paths stored in the database are
-// relative to <folder>). Folders are only read, never changed: the database is copied first.
+// A backup folder is recognised by the database inside it, in the phone's own layout
+//   <folder>/Databases/msgstore.db.crypt15   (end-to-end encrypted backup: decrypted here with
+//                                             the key file named by ANDROID_KEY_FILE)
+//   <folder>/Databases/msgstore.db           (an already decrypted copy wins when present)
+// (or the same files directly in <folder>). Media files are read from <folder>/Media/..., the
+// paths stored in the database are relative to <folder>. Folders are only read, never changed:
+// the database is copied or decrypted into a temporary file first, which is deleted afterwards.
+// crypt14 backups need the key file from the phone itself and are not supported: make a crypt15
+// (end-to-end encrypted) backup instead.
 //
 // Layout facts below were checked against a real msgstore.db (WhatsApp 2.26.40.76); every table
 // and column that is not essential is optional, so a different WhatsApp version degrades
@@ -15,6 +19,7 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const cfg = require('./config');
 const { db } = require('./db');
+const { decryptCrypt15 } = require('./crypt15');
 
 // Labels for message_type. raw_type is stored too, so a label can be corrected without re-importing.
 const ANDROID_TYPES = {
@@ -30,19 +35,32 @@ function normJid(jid) {
   return String(jid).replace(/@s\.whatsapp\.net$/, '@c.us');
 }
 
-function androidDbPath(dir) {
-  for (const p of [path.join(dir, 'Databases', 'msgstore.db'), path.join(dir, 'msgstore.db')]) {
-    if (fs.existsSync(p)) return p;
+// Which database file a folder offers: { kind: 'plain' | 'crypt15' | 'crypt14', file } or null.
+function androidSource(dir) {
+  for (const d of [path.join(dir, 'Databases'), dir]) {
+    const plain = path.join(d, 'msgstore.db');
+    if (fs.existsSync(plain)) return { kind: 'plain', file: plain };
+  }
+  for (const [ext, kind] of [['.crypt15', 'crypt15'], ['.crypt14', 'crypt14']]) {
+    for (const d of [path.join(dir, 'Databases'), dir]) {
+      let names = [];
+      try { names = fs.readdirSync(d); } catch (_) { continue; }
+      const main = names.find((n) => n === `msgstore.db${ext}`);
+      // Dated daily copies are the fallback; "increment" files are partial and never used alone.
+      const dated = names.filter((n) => /^msgstore-\d{4}-\d{2}-\d{2}\.\d+\.db/.test(n) && n.endsWith(ext)).sort().pop();
+      const pick = main || dated;
+      if (pick) return { kind, file: path.join(d, pick) };
+    }
   }
   return null;
 }
 
-// Folder names that hold a decrypted msgstore.db, oldest name first.
+// Folder names that hold an Android backup database (decrypted or not), oldest name first.
 function discoverAndroidSnapshots(root) {
   let entries = [];
   try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { return []; }
   return entries
-    .filter((e) => e.isDirectory() && androidDbPath(path.join(root, e.name)))
+    .filter((e) => e.isDirectory() && androidSource(path.join(root, e.name)))
     .map((e) => e.name)
     .sort();
 }
@@ -90,7 +108,7 @@ function seconds(ms) {
   return Math.floor(n > 1e11 ? n / 1000 : n);
 }
 
-function importAndroidSnapshot(root, name) {
+async function importAndroidSnapshot(root, name) {
   const snapDir = path.join(root, name);
   const t0 = Date.now();
   const stats = {
@@ -101,12 +119,25 @@ function importAndroidSnapshot(root, name) {
     media_refs: 0, media_on_disk: 0, seconds: 0,
   };
 
-  const src = androidDbPath(snapDir);
-  if (!src) throw new Error('no decrypted msgstore.db in this folder');
+  const source = androidSource(snapDir);
+  if (!source) throw new Error('no msgstore database in this folder');
   fs.mkdirSync(cfg.tmpDir, { recursive: true });
   const tmp = path.join(cfg.tmpDir, `${name}.msgstore.db`);
   try { fs.rmSync(tmp, { force: true }); } catch (_) { /* ignore */ }
-  fs.copyFileSync(src, tmp);
+  stats.source_file = path.basename(source.file);
+  if (source.kind === 'plain') {
+    fs.copyFileSync(source.file, tmp);
+  } else if (source.kind === 'crypt15') {
+    if (!cfg.androidKeyFile) throw new Error(`${stats.source_file} is encrypted: set ANDROID_KEY_FILE to a file holding the 64-digit key`);
+    try {
+      await decryptCrypt15(source.file, tmp, cfg.androidKeyFile);
+    } catch (e) {
+      throw new Error(`could not decrypt ${stats.source_file}: ${e.message}`);
+    }
+    stats.decrypted = true;
+  } else {
+    throw new Error(`${stats.source_file} is a crypt14 backup, which needs the key file from the phone. Turn on end-to-end encrypted backup in WhatsApp and make a new backup (crypt15).`);
+  }
 
   const adb = new Database(tmp, { fileMustExist: true, readonly: true });
   try {
@@ -276,4 +307,4 @@ function importAndroidSnapshot(root, name) {
   return stats;
 }
 
-module.exports = { discoverAndroidSnapshots, importAndroidSnapshot, androidDbPath };
+module.exports = { discoverAndroidSnapshots, importAndroidSnapshot, androidSource };
