@@ -2,7 +2,7 @@
 //
 // A backup folder is recognised by the database inside it, in the phone's own layout
 //   <folder>/Databases/msgstore.db.crypt15   (end-to-end encrypted backup: decrypted here with
-//                                             the key file named by ANDROID_KEY_FILE)
+//                                             the key in ANDROID_KEY, or the file in ANDROID_KEY_FILE)
 //   <folder>/Databases/msgstore.db           (an already decrypted copy wins when present)
 // (or the same files directly in <folder>). Media files are read from <folder>/Media/..., the
 // paths stored in the database are relative to <folder>. Folders are only read, never changed:
@@ -128,9 +128,9 @@ async function importAndroidSnapshot(root, name) {
   if (source.kind === 'plain') {
     fs.copyFileSync(source.file, tmp);
   } else if (source.kind === 'crypt15') {
-    if (!cfg.androidKeyFile) throw new Error(`${stats.source_file} is encrypted: set ANDROID_KEY_FILE to a file holding the 64-digit key`);
+    if (!cfg.androidKey && !cfg.androidKeyFile) throw new Error(`${stats.source_file} is encrypted: set ANDROID_KEY (the 64-digit key) in the .env`);
     try {
-      await decryptCrypt15(source.file, tmp, cfg.androidKeyFile);
+      await decryptCrypt15(source.file, tmp, { key: cfg.androidKey, keyFile: cfg.androidKeyFile });
     } catch (e) {
       throw new Error(`could not decrypt ${stats.source_file}: ${e.message}`);
     }

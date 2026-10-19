@@ -26,6 +26,17 @@ function readRootKey(file) {
   throw new Error('the key file must hold the 64-digit key (hex) on one line, or be WhatsApp\'s encrypted_backup.key');
 }
 
+// The key comes from ANDROID_KEY (the 64 hex digits themselves) or, if that is empty, from a key file.
+function rootKeyFrom({ key, keyFile }) {
+  if (key && String(key).trim()) {
+    const hex = String(key).replace(/\s+/g, '');
+    if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error('ANDROID_KEY must be exactly 64 hex digits (0-9 and a-f)');
+    return Buffer.from(hex, 'hex');
+  }
+  if (keyFile) return readRootKey(keyFile);
+  throw new Error('no key: set ANDROID_KEY (64 hex digits) or ANDROID_KEY_FILE');
+}
+
 function deriveKey(root) {
   const privateKey = hmac(Buffer.alloc(32), root);
   return hmac(privateKey, Buffer.alloc(0), Buffer.from('backup encryption'), Buffer.from([1]));
@@ -69,8 +80,8 @@ function findIv(header) {
   return null;
 }
 
-async function decryptCrypt15(inFile, outFile, keyFile) {
-  const root = readRootKey(keyFile);
+async function decryptCrypt15(inFile, outFile, keySource) {
+  const root = rootKeyFrom(keySource);
   if (root.length !== 32) throw new Error('the key must be 32 bytes (64 hex digits)');
   const aesKey = deriveKey(root);
   const size = fs.statSync(inFile).size;
@@ -107,4 +118,4 @@ async function decryptCrypt15(inFile, outFile, keyFile) {
   }
 }
 
-module.exports = { decryptCrypt15, readRootKey, deriveKey };
+module.exports = { decryptCrypt15, readRootKey, rootKeyFrom, deriveKey };
